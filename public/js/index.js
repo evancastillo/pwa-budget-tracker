@@ -1,24 +1,48 @@
 let transactions = [];
+let startingTotal = 0;
 let myChart;
 
-fetch("/api/transaction")
-  .then(response => {
-    return response.json();
-  })
-  .then(data => {
-    // save db data on global variable
-    transactions = data;
+function fetchTransactions() {
+  fetch("/api/transaction")
+    .then(response => {
+      response.json()
+        .then(function (data) {
+          console.log('transactions', data);
 
-    populateTotal();
-    populateTable();
-    populateChart();
-  });
+          // store transactions in indexeddb, include `synced = true`
+          for (let i = 0; i < data.length; i++) {
+            data[i].synced = true;
+          }
+          transactions = data.map(txn => ({ ...txn, synced: true }));
+          startingTotal = 0;
+          populateUi(true);
+        })
+    })
+    .catch(err => {
+      // network request failed, try to get it from indexDb
+      startingTotal = parseInt(localStorage.getItem('budgetTotal'));
+      populateUi();
+    });
+}
 
-function populateTotal() {
+function populateUi(saveTotal = false) {
+  populateTotal(saveTotal);
+  populateTable();
+  populateChart();
+}
+
+function populateTotal(save = false) {
   // reduce transaction amounts to a single total value
-  let total = transactions.reduce((total, t) => {
+  total = transactions.reduce((total, t) => {
     return total + parseInt(t.value);
   }, 0);
+
+  if (save) {
+    localStorage.setItem('budgetTotal', total);
+  }
+
+  total += startingTotal;
+  console.log('total', total);
 
   let totalEl = document.querySelector("#total");
   totalEl.textContent = total;
@@ -57,6 +81,12 @@ function populateChart() {
     return sum;
   });
 
+  if (data.length) {
+    data[0] += startingTotal;
+  } else {
+    data = [startingTotal];
+  }
+
   // remove old chart if it exists
   if (myChart) {
     myChart.destroy();
@@ -66,14 +96,14 @@ function populateChart() {
 
   myChart = new Chart(ctx, {
     type: 'line',
-      data: {
-        labels,
-        datasets: [{
-            label: "Total Over Time",
-            fill: true,
-            backgroundColor: "#6666ff",
-            data
-        }]
+    data: {
+      labels,
+      datasets: [{
+        label: "Total Over Time",
+        fill: true,
+        backgroundColor: "#6666ff",
+        data
+      }]
     }
   });
 }
@@ -100,18 +130,22 @@ function sendTransaction(isAdding) {
   };
 
   // if subtracting funds, convert amount to negative number
+  transaction.value = parseInt(transaction.value);
   if (!isAdding) {
     transaction.value *= -1;
+  } else {
+    transaction.value *= 1;
   }
+  const newSavedTotal = parseInt(localStorage.getItem('budgetTotal')) + transaction.value;
+  console.log('updating saved total: ', newSavedTotal);
+  localStorage.setItem('budgetTotal', newSavedTotal);
 
   // add to beginning of current array of data
   transactions.unshift(transaction);
 
   // re-run logic to populate ui with new record
-  populateChart();
-  populateTable();
-  populateTotal();
-  
+  populateUi();
+
   // also send to server
   fetch("/api/transaction", {
     method: "POST",
@@ -121,33 +155,37 @@ function sendTransaction(isAdding) {
       "Content-Type": "application/json"
     }
   })
-  .then(response => {    
-    return response.json();
-  })
-  .then(data => {
-    if (data.errors) {
-      errorEl.textContent = "Missing Information";
-    }
-    else {
+    .then(response => {
+      return response.json();
+    })
+    .then(data => {
+      if (data.errors) {
+        errorEl.textContent = "Missing Information";
+      }
+      else {
+        // clear form
+        nameEl.value = "";
+        amountEl.value = "";
+      }
+    })
+    .catch(err => {
+      // fetch failed, so save in indexed db
+      idbSaveRecord(transaction);
+
       // clear form
       nameEl.value = "";
       amountEl.value = "";
-    }
-  })
-  .catch(err => {
-    // fetch failed, so save in indexed db
-    saveRecord(transaction);
-
-    // clear form
-    nameEl.value = "";
-    amountEl.value = "";
-  });
+    });
 }
 
-document.querySelector("#add-btn").onclick = function() {
+fetchTransactions();
+
+document.querySelector("#add-btn").onclick = function () {
   sendTransaction(true);
 };
 
-document.querySelector("#sub-btn").onclick = function() {
+document.querySelector("#sub-btn").onclick = function () {
   sendTransaction(false);
 };
+
+window.addEventListener('readytosync', fetchTransactions);
